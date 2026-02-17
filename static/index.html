@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ndt7 JavaScript Performance</title>
+<script src="ndt7.js"></script>
+<style>
+  body { font-family: monospace; margin: 2em; }
+  .result { font-size: 2em; margin: 0.5em 0; }
+  #log { white-space: pre-wrap; font-size: 0.9em; color: #555; margin-top: 1em; }
+</style>
+</head>
+<body>
+<h1>ndt7 JavaScript Performance</h1>
+<p>Note: this server does not send counterflow messages during upload,
+so upload speed is estimated client-side (based on bytes sent minus
+buffered) and may be inaccurate.</p>
+<div id="download" class="result">[Download]</div>
+<div id="upload" class="result">[Upload]</div>
+<button onclick="run()">Run Test</button>
+<div id="log"></div>
+<script>
+function log(msg) {
+  const el = document.getElementById('log');
+  el.textContent += msg + '\n';
+  console.log(msg);
+}
+
+function run() {
+  document.getElementById('download').textContent = 'Download: running...';
+  document.getElementById('upload').textContent = 'Upload: waiting...';
+  document.getElementById('log').textContent = '';
+
+  ndt7.test(
+    {
+      userAcceptedDataPolicy: true,
+      downloadworkerfile: 'ndt7-download-worker.js',
+      uploadworkerfile: 'ndt7-upload-worker.js',
+      metadata: {
+        client_name: 'ndt7-js-perf',
+      },
+      server: location.host,
+      protocol: location.protocol === 'https:' ? 'wss' : 'ws',
+    },
+    {
+      downloadStart: function() {
+        log('download: started');
+      },
+      downloadMeasurement: function(data) {
+        if (data.Source === 'client') {
+          const mbps = data.Data.MeanClientMbps.toFixed(2);
+          document.getElementById('download').textContent = 'Download: ' + mbps + ' Mbps';
+          log('download: ' + mbps + ' Mbps (' + data.Data.NumBytes + ' bytes, ' + data.Data.ElapsedTime.toFixed(1) + 's)');
+        }
+      },
+      downloadComplete: function(data) {
+        if (data.LastClientMeasurement) {
+          const mbps = data.LastClientMeasurement.MeanClientMbps.toFixed(2);
+          document.getElementById('download').textContent = 'Download: ' + mbps + ' Mbps';
+          log('download: complete at ' + mbps + ' Mbps');
+        }
+        document.getElementById('upload').textContent = 'Upload: running...';
+      },
+      uploadStart: function() {
+        log('upload: started');
+      },
+      uploadMeasurement: function(data) {
+        if (data.Source === 'client') {
+          const mbps = data.Data.MeanClientMbps.toFixed(2);
+          document.getElementById('upload').textContent = 'Upload: ' + mbps + ' Mbps';
+          log('upload: ' + mbps + ' Mbps (' + data.Data.NumBytes + ' bytes, ' + data.Data.ElapsedTime.toFixed(1) + 's)');
+        }
+      },
+      uploadComplete: function(data) {
+        if (data.LastClientMeasurement) {
+          const mbps = data.LastClientMeasurement.MeanClientMbps.toFixed(2);
+          document.getElementById('upload').textContent = 'Upload: ' + mbps + ' Mbps';
+          log('upload: complete at ' + mbps + ' Mbps');
+        }
+      },
+      error: function(err) {
+        log('error: ' + (err.message || err));
+      },
+    },
+  ).then(function(exitcode) {
+    log('test completed with exit code: ' + exitcode);
+  });
+}
+</script>
+</body>
+</html>
