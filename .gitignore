@@ -1,5 +1,7 @@
 /gencert
 /http1-server
+/http2-server
 /lxs
 /ndt7-server
 /testdata/
+cmd/http2-server/target/

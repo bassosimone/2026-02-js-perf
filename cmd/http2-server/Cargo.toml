@@ -1,0 +1,18 @@
+[package]
+name = "http2-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.7"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+futures = "0.3"
+hyper = { version = "1", features = ["http2", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http2"] }
+rustls = { version = "0.23", features = ["ring"] }
+rustls-pemfile = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-rustls = "0.26"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["fs"] }
