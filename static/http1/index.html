@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>HTTP/1.1+TLS Performance</title>
+<style>
+  body { font-family: monospace; margin: 2em; max-width: 80em; }
+  h2 { margin-top: 1.5em; }
+  .controls { margin: 1em 0; }
+  .controls label { margin-right: 1em; }
+  .controls select, .controls input { font-family: monospace; }
+  .result { font-size: 1.5em; margin: 0.5em 0; }
+  #log { white-space: pre-wrap; font-size: 0.85em; color: #555;
+         margin-top: 1em; max-height: 30em; overflow-y: auto;
+         border: 1px solid #ccc; padding: 0.5em; }
+  button { font-family: monospace; font-size: 1em; padding: 0.3em 1em; margin: 0.2em; }
+  button:disabled { opacity: 0.5; }
+  fieldset { margin: 1em 0; padding: 1em; }
+</style>
+</head>
+<body>
+<h1>HTTP/1.1+TLS Performance</h1>
+
+<div class="controls">
+  <label>Size:
+    <select id="size">
+      <option value="67108864">64 MB</option>
+      <option value="268435456">256 MB</option>
+      <option value="1073741824" selected>1 GB</option>
+      <option value="4294967296">4 GB</option>
+    </select>
+  </label>
+</div>
+
+<fieldset>
+  <legend>Download</legend>
+  <div id="dl-result" class="result">[idle]</div>
+  <button onclick="runDownload('fetch-stream')">Fetch + ReadableStream</button>
+  <button onclick="runDownload('fetch-blob')">Fetch + Blob</button>
+  <button onclick="runDownload('fetch-arraybuffer')">Fetch + ArrayBuffer</button>
+  <button onclick="runDownload('xhr-blob')">XHR + Blob</button>
+</fieldset>
+
+<fieldset>
+  <legend>Upload</legend>
+  <div id="ul-result" class="result">[idle]</div>
+  <button onclick="runUpload('fetch-stream')">Fetch + ReadableStream</button>
+  <button onclick="runUpload('fetch-blob')">Fetch + Blob</button>
+  <button onclick="runUpload('fetch-arraybuffer')">Fetch + ArrayBuffer</button>
+  <button onclick="runUpload('xhr-blob')">XHR + Blob</button>
+</fieldset>
+
+<button onclick="document.getElementById('log').textContent=''">Clear Log</button>
+<div id="log"></div>
+
+<script>
+'use strict';
+
+function getSize() {
+  return parseInt(document.getElementById('size').value, 10);
+}
+
+function log(msg) {
+  const el = document.getElementById('log');
+  el.textContent += msg + '\n';
+  el.scrollTop = el.scrollHeight;
+}
+
+function mbps(bytes, ms) {
+  if (ms <= 0) return 0;
+  return (bytes * 8) / (ms / 1000) / 1e6;
+}
+
+function fmt(val) {
+  return val.toFixed(2);
+}
+
+function setButtons(disabled) {
+  document.querySelectorAll('button').forEach(function(b) {
+    b.disabled = disabled;
+  });
+}
+
+// ─── Download strategies ───────────────────────────────────────────
+
+async function dlFetchStream(size) {
+  const el = document.getElementById('dl-result');
+  el.textContent = 'Download (fetch+stream): starting...';
+  const t0 = performance.now();
+  const resp = await fetch('/api/' + size);
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  const reader = resp.body.getReader();
+  let total = 0;
+  let prev = t0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    const now = performance.now();
+    if (now - prev > 250) {
+      const speed = fmt(mbps(total, now - t0));
+      el.textContent = 'Download (fetch+stream): ' + speed + ' Mbps';
+      log('dl fetch+stream: ' + speed + ' Mbps (' + total + ' bytes, ' + fmt((now - t0) / 1000) + 's)');
+      prev = now;
+    }
+  }
+  const elapsed = performance.now() - t0;
+  const speed = fmt(mbps(total, elapsed));
+  el.textContent = 'Download (fetch+stream): ' + speed + ' Mbps';
+  log('dl fetch+stream: DONE ' + speed + ' Mbps (' + total + ' bytes, ' + fmt(elapsed / 1000) + 's)');
+}
+
+async function dlFetchBlob(size) {
+  const el = document.getElementById('dl-result');
+  el.textContent = 'Download (fetch+blob): waiting for response...';
+  log('dl fetch+blob: no progress available, waiting for completion...');
+  const t0 = performance.now();
+  const resp = await fetch('/api/' + size);
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  const blob = await resp.blob();
+  const elapsed = performance.now() - t0;
+  const speed = fmt(mbps(blob.size, elapsed));
+  el.textContent = 'Download (fetch+blob): ' + speed + ' Mbps';
+  log('dl fetch+blob: DONE ' + speed + ' Mbps (' + blob.size + ' bytes, ' + fmt(elapsed / 1000) + 's)');
+}
+
+async function dlFetchArrayBuffer(size) {
+  const el = document.getElementById('dl-result');
+  el.textContent = 'Download (fetch+arraybuffer): waiting for response...';
+  log('dl fetch+arraybuffer: no progress available, waiting for completion...');
+  const t0 = performance.now();
+  const resp = await fetch('/api/' + size);
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  const ab = await resp.arrayBuffer();
+  const elapsed = performance.now() - t0;
+  const speed = fmt(mbps(ab.byteLength, elapsed));
+  el.textContent = 'Download (fetch+arraybuffer): ' + speed + ' Mbps';
+  log('dl fetch+arraybuffer: DONE ' + speed + ' Mbps (' + ab.byteLength + ' bytes, ' + fmt(elapsed / 1000) + 's)');
+}
+
+function dlXHRBlob(size) {
+  return new Promise(function(resolve, reject) {
+    const el = document.getElementById('dl-result');
+    el.textContent = 'Download (xhr+blob): starting...';
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', '/api/' + size);
+    xhr.responseType = 'blob';
+    const t0 = performance.now();
+    let prev = t0;
+    xhr.onprogress = function(ev) {
+      const now = performance.now();
+      if (now - prev > 250) {
+        const speed = fmt(mbps(ev.loaded, now - t0));
+        el.textContent = 'Download (xhr+blob): ' + speed + ' Mbps';
+        log('dl xhr+blob: ' + speed + ' Mbps (' + ev.loaded + ' bytes, ' + fmt((now - t0) / 1000) + 's)');
+        prev = now;
+      }
+    };
+    xhr.onload = function() {
+      const elapsed = performance.now() - t0;
+      const speed = fmt(mbps(xhr.response.size, elapsed));
+      el.textContent = 'Download (xhr+blob): ' + speed + ' Mbps';
+      log('dl xhr+blob: DONE ' + speed + ' Mbps (' + xhr.response.size + ' bytes, ' + fmt(elapsed / 1000) + 's)');
+      resolve();
+    };
+    xhr.onerror = function() { reject(new Error('XHR error')); };
+    xhr.send();
+  });
+}
+
+// ─── Upload strategies ─────────────────────────────────────────────
+
+async function ulFetchStream(size) {
+  const el = document.getElementById('ul-result');
+  el.textContent = 'Upload (fetch+stream): starting...';
+  const chunkSize = 1 << 20; // 1 MB
+  let sent = 0;
+  let prev = 0;
+  let t0;
+  const stream = new ReadableStream({
+    start() {
+      t0 = performance.now();
+      prev = t0;
+    },
+    pull(controller) {
+      const n = Math.min(chunkSize, size - sent);
+      if (n <= 0) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(new Uint8Array(n));
+      sent += n;
+      const now = performance.now();
+      if (now - prev > 250) {
+        const speed = fmt(mbps(sent, now - t0));
+        el.textContent = 'Upload (fetch+stream): ' + speed + ' Mbps';
+        log('ul fetch+stream: ' + speed + ' Mbps (' + sent + ' bytes, ' + fmt((now - t0) / 1000) + 's)');
+        prev = now;
+      }
+    },
+  });
+  const resp = await fetch('/api/' + size, {
+    method: 'PUT',
+    body: stream,
+    duplex: 'half',
+  });
+  const elapsed = performance.now() - t0;
+  const speed = fmt(mbps(sent, elapsed));
+  el.textContent = 'Upload (fetch+stream): ' + speed + ' Mbps (HTTP ' + resp.status + ')';
+  log('ul fetch+stream: DONE ' + speed + ' Mbps (' + sent + ' bytes, ' + fmt(elapsed / 1000) + 's, HTTP ' + resp.status + ')');
+}
+
+async function ulFetchBlob(size) {
+  const el = document.getElementById('ul-result');
+  el.textContent = 'Upload (fetch+blob): building blob...';
+  const chunkSize = 1 << 20; // 1 MB
+  const chunk = new Uint8Array(chunkSize);
+  const numChunks = Math.ceil(size / chunkSize);
+  const parts = [];
+  for (let i = 0; i < numChunks; i++) {
+    parts.push(chunk);
+  }
+  const blob = new Blob(parts);
+  log('ul fetch+blob: blob constructed (' + blob.size + ' bytes, ' + numChunks + ' chunks), no progress available...');
+  el.textContent = 'Upload (fetch+blob): sending ' + blob.size + ' bytes...';
+  const t0 = performance.now();
+  const resp = await fetch('/api/' + size, { method: 'PUT', body: blob });
+  const elapsed = performance.now() - t0;
+  const speed = fmt(mbps(blob.size, elapsed));
+  el.textContent = 'Upload (fetch+blob): ' + speed + ' Mbps (HTTP ' + resp.status + ')';
+  log('ul fetch+blob: DONE ' + speed + ' Mbps (' + blob.size + ' bytes, ' + fmt(elapsed / 1000) + 's, HTTP ' + resp.status + ')');
+}
+
+async function ulFetchArrayBuffer(size) {
+  const el = document.getElementById('ul-result');
+  el.textContent = 'Upload (fetch+arraybuffer): allocating...';
+  log('ul fetch+arraybuffer: allocating ' + size + ' bytes...');
+  let buf;
+  try {
+    buf = new ArrayBuffer(size);
+  } catch (e) {
+    el.textContent = 'Upload (fetch+arraybuffer): FAILED (allocation)';
+    log('ul fetch+arraybuffer: FAILED to allocate ' + size + ' bytes: ' + e.message);
+    return;
+  }
+  log('ul fetch+arraybuffer: allocated, sending...');
+  el.textContent = 'Upload (fetch+arraybuffer): sending ' + size + ' bytes...';
+  const t0 = performance.now();
+  const resp = await fetch('/api/' + size, { method: 'PUT', body: buf });
+  const elapsed = performance.now() - t0;
+  const speed = fmt(mbps(size, elapsed));
+  el.textContent = 'Upload (fetch+arraybuffer): ' + speed + ' Mbps (HTTP ' + resp.status + ')';
+  log('ul fetch+arraybuffer: DONE ' + speed + ' Mbps (' + size + ' bytes, ' + fmt(elapsed / 1000) + 's, HTTP ' + resp.status + ')');
+}
+
+function ulXHRBlob(size) {
+  return new Promise(function(resolve, reject) {
+    const el = document.getElementById('ul-result');
+    el.textContent = 'Upload (xhr+blob): building blob...';
+    const chunkSize = 1 << 20;
+    const chunk = new Uint8Array(chunkSize);
+    const numChunks = Math.ceil(size / chunkSize);
+    const parts = [];
+    for (let i = 0; i < numChunks; i++) {
+      parts.push(chunk);
+    }
+    const blob = new Blob(parts);
+    log('ul xhr+blob: blob constructed (' + blob.size + ' bytes), sending...');
+    el.textContent = 'Upload (xhr+blob): sending ' + blob.size + ' bytes...';
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', '/api/' + size);
+    const t0 = performance.now();
+    let prev = t0;
+    xhr.upload.onprogress = function(ev) {
+      const now = performance.now();
+      if (now - prev > 250) {
+        const speed = fmt(mbps(ev.loaded, now - t0));
+        el.textContent = 'Upload (xhr+blob): ' + speed + ' Mbps';
+        log('ul xhr+blob: ' + speed + ' Mbps (' + ev.loaded + ' bytes, ' + fmt((now - t0) / 1000) + 's)');
+        prev = now;
+      }
+    };
+    xhr.onload = function() {
+      const elapsed = performance.now() - t0;
+      const speed = fmt(mbps(blob.size, elapsed));
+      el.textContent = 'Upload (xhr+blob): ' + speed + ' Mbps (HTTP ' + xhr.status + ')';
+      log('ul xhr+blob: DONE ' + speed + ' Mbps (' + blob.size + ' bytes, ' + fmt(elapsed / 1000) + 's, HTTP ' + xhr.status + ')');
+      resolve();
+    };
+    xhr.onerror = function() { reject(new Error('XHR error')); };
+    xhr.send(blob);
+  });
+}
+
+// ─── Dispatch ──────────────────────────────────────────────────────
+
+var strategies = {
+  download: {
+    'fetch-stream': dlFetchStream,
+    'fetch-blob': dlFetchBlob,
+    'fetch-arraybuffer': dlFetchArrayBuffer,
+    'xhr-blob': dlXHRBlob,
+  },
+  upload: {
+    'fetch-stream': ulFetchStream,
+    'fetch-blob': ulFetchBlob,
+    'fetch-arraybuffer': ulFetchArrayBuffer,
+    'xhr-blob': ulXHRBlob,
+  },
+};
+
+async function runDownload(name) {
+  setButtons(true);
+  try {
+    log('--- download: ' + name + ' (' + getSize() + ' bytes) ---');
+    await strategies.download[name](getSize());
+  } catch (e) {
+    document.getElementById('dl-result').textContent = 'Download: ERROR';
+    log('dl ' + name + ': ERROR ' + e.message);
+  } finally {
+    setButtons(false);
+  }
+}
+
+async function runUpload(name) {
+  setButtons(true);
+  try {
+    log('--- upload: ' + name + ' (' + getSize() + ' bytes) ---');
+    await strategies.upload[name](getSize());
+  } catch (e) {
+    document.getElementById('ul-result').textContent = 'Upload: ERROR';
+    log('ul ' + name + ': ERROR ' + e.message);
+  } finally {
+    setButtons(false);
+  }
+}
+</script>
+</body>
+</html>

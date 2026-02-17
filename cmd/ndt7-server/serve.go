@@ -19,7 +19,7 @@ func serveMain(ctx context.Context, args []string) error {
 		certFlag      = "testdata/cert.pem"
 		keyFlag       = "testdata/key.pem"
 		portFlag      = "4567"
-		staticDirFlag = "./static"
+		staticDirFlag = "./static/ndt7"
 	)
 
 	fset := vflag.NewFlagSet("ndt7 serve", vflag.ExitOnError)
