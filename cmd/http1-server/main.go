@@ -12,9 +12,9 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/bassosimone/2026-02-js-perf/internal/infinite"
-	"github.com/bassosimone/2026-02-js-perf/internal/slogging"
 	"github.com/bassosimone/runtimex"
 	"github.com/bassosimone/vclip"
 	"github.com/bassosimone/vflag"
@@ -54,6 +54,14 @@ func serveMain(ctx context.Context, args []string) error {
 		TLSConfig: &tls.Config{
 			NextProtos: []string{"http/1.1"},
 		},
+		ConnState: func(conn net.Conn, state http.ConnState) {
+			switch state {
+			case http.StateNew:
+				slog.Info("conn new", slog.String("remote", conn.RemoteAddr().String()))
+			case http.StateClosed:
+				slog.Info("conn closed", slog.String("remote", conn.RemoteAddr().String()))
+			}
+		},
 	}
 	go func() {
 		defer srv.Close()
@@ -71,20 +79,37 @@ func serveMain(ctx context.Context, args []string) error {
 	return nil
 }
 
+func tlsALPN(req *http.Request) string {
+	if req.TLS != nil {
+		return req.TLS.NegotiatedProtocol
+	}
+	return ""
+}
+
 func handleGet(rw http.ResponseWriter, req *http.Request) {
 	count, err := strconv.ParseInt(req.PathValue("size"), 10, 64)
 	if err != nil || count < 0 {
 		rw.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	slog.Info("GET", slog.Int64("count", count),
+	slog.Info("GET",
+		slog.Int64("count", count),
 		slog.String("proto", req.Proto),
+		slog.String("alpn", tlsALPN(req)),
+		slog.String("remote", req.RemoteAddr),
 	)
+	t0 := time.Now()
 	bodyReader := io.LimitReader(infinite.Reader{}, count)
 	rw.Header().Set("Content-Length", strconv.FormatInt(count, 10))
 	rw.WriteHeader(http.StatusOK)
 	buf := make([]byte, 1<<20) // 1 MiB
-	io.CopyBuffer(rw, bodyReader, buf)
+	written, _ := io.CopyBuffer(rw, bodyReader, buf)
+	elapsed := time.Since(t0)
+	slog.Info("GET done",
+		slog.Int64("bytes", written),
+		slog.Duration("elapsed", elapsed),
+		slog.String("remote", req.RemoteAddr),
+	)
 }
 
 func handlePut(rw http.ResponseWriter, req *http.Request) {
@@ -93,13 +118,21 @@ func handlePut(rw http.ResponseWriter, req *http.Request) {
 		rw.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	slog.Info("PUT", slog.Int64("expectCount", expectCount),
+	slog.Info("PUT",
+		slog.Int64("expectCount", expectCount),
 		slog.String("proto", req.Proto),
+		slog.String("alpn", tlsALPN(req)),
+		slog.String("remote", req.RemoteAddr),
 	)
-	bodyWrapper := slogging.NewReadCloser(req.Body)
-	defer bodyWrapper.Close()
-	bodyReader := io.LimitReader(bodyWrapper, expectCount)
+	t0 := time.Now()
+	bodyReader := io.LimitReader(req.Body, expectCount)
 	buf := make([]byte, 1<<20) // 1 MiB
-	io.CopyBuffer(io.Discard, bodyReader, buf)
+	read, _ := io.CopyBuffer(io.Discard, bodyReader, buf)
+	elapsed := time.Since(t0)
+	slog.Info("PUT done",
+		slog.Int64("bytes", read),
+		slog.Duration("elapsed", elapsed),
+		slog.String("remote", req.RemoteAddr),
+	)
 	rw.WriteHeader(http.StatusNoContent)
 }

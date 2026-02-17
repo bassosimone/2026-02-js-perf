@@ -17,6 +17,7 @@ use hyper_util::server::conn::auto::Builder;
 use rustls::ServerConfig;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tower::Service;
@@ -120,6 +121,13 @@ async fn serve(args: Args) {
                     return;
                 }
             };
+            let alpn = tls_stream
+                .get_ref()
+                .1
+                .alpn_protocol()
+                .map(|p| String::from_utf8_lossy(p).to_string())
+                .unwrap_or_else(|| "none".to_string());
+            eprintln!("conn new remote={remote_addr} alpn={alpn}");
             let io = TokioIo::new(tls_stream);
             let service = hyper::service::service_fn(move |req: hyper::Request<Incoming>| {
                 let mut app = app.clone();
@@ -130,8 +138,9 @@ async fn serve(args: Args) {
                 }
             });
             if let Err(e) = builder.serve_connection(io, service).await {
-                eprintln!("connection error: {e}");
+                eprintln!("conn error remote={remote_addr}: {e}");
             }
+            eprintln!("conn closed remote={remote_addr}");
         });
     }
 }
@@ -141,9 +150,15 @@ async fn handle_get(Path(size): Path<u64>) -> Response {
     if size == 0 {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    eprintln!("GET /api/{size}");
+    eprintln!("GET /api/{size}: headers received");
+    let start = Instant::now();
     let stream = futures::stream::unfold(0u64, move |sent| async move {
         if sent >= size {
+            let elapsed = start.elapsed();
+            eprintln!(
+                "GET /api/{size}: done bytes={sent} elapsed={:.3}s",
+                elapsed.as_secs_f64()
+            );
             return None;
         }
         let remaining = (size - sent) as usize;
@@ -164,14 +179,22 @@ async fn handle_put(Path(size): Path<u64>, body: Body) -> Response {
     if size == 0 {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    eprintln!("PUT /api/{size}");
+    eprintln!("PUT /api/{size}: headers received");
+    let start = Instant::now();
     let mut stream = body.into_data_stream();
+    let mut received: u64 = 0;
     let mut remaining = size + 1;
     while let Some(Ok(chunk)) = stream.next().await {
+        received += chunk.len() as u64;
         remaining = remaining.saturating_sub(chunk.len() as u64);
         if remaining == 0 {
             break;
         }
     }
+    let elapsed = start.elapsed();
+    eprintln!(
+        "PUT /api/{size}: done bytes={received} elapsed={:.3}s",
+        elapsed.as_secs_f64()
+    );
     StatusCode::NO_CONTENT.into_response()
 }
